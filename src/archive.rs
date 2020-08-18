@@ -3,13 +3,10 @@
 //! Provides easy methods to navigate througth the epub parts and to get
 //! the content as string.
 
-use percent_encoding;
-use zip;
-
-use failure::Error;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use crate::error::Error;
 use std::io::{Read, Seek};
 
 /// Epub archive struct. Here it's stored the file path and the list of
@@ -89,8 +86,7 @@ impl<R: Read + Seek> EpubArchive<R> {
         };
 
         // try percent encoding
-        let name =
-            self::percent_encoding::percent_decode(name.as_str().as_bytes()).decode_utf8()?;
+        let name = percent_encoding::percent_decode(name.as_str().as_bytes()).decode_utf8()?;
         let mut zipfile = self.zip.by_name(&name)?;
         zipfile.read_to_end(&mut entry)?;
         Ok(entry)

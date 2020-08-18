@@ -1,19 +1,12 @@
-use xml;
-
-use self::xml::reader::Error as ReaderError;
-use self::xml::reader::EventReader;
-use self::xml::reader::ParserConfig;
 use std::cell::RefCell;
-use std::rc::Rc;
-use std::rc::Weak;
-
-use self::xml::reader::XmlEvent as ReaderEvent;
-use self::xml::writer::XmlEvent as WriterEvent;
-
-use self::xml::writer::EmitterConfig;
-use self::xml::writer::Error as EmitterError;
 use std::error::Error;
 use std::fmt;
+use std::rc::{Rc, Weak};
+
+use xml::reader::{Error as ReaderError, EventReader, ParserConfig};
+
+use xml::reader::XmlEvent as ReaderEvent;
+use xml::writer::{EmitterConfig, Error as EmitterError, XmlEvent as WriterEvent};
 
 use std::borrow::Cow;
 
@@ -177,10 +170,8 @@ impl XMLNode {
         for c in self.childs.iter() {
             if c.borrow().name.local_name == tag {
                 return Ok(c.clone());
-            } else {
-                if let Ok(n) = c.borrow().find(tag) {
-                    return Ok(n);
-                }
+            } else if let Ok(n) = c.borrow().find(tag) {
+                return Ok(n);
             }
         }
         Err(XMLError {
