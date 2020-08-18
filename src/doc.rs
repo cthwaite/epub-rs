@@ -664,13 +664,9 @@ impl<R: Read + Seek> EpubDoc<R> {
             let item = r.borrow();
             if item.name.local_name == "meta" {
                 if let (Ok(k), Ok(v)) = (item.get_attr("name"), item.get_attr("content")) {
-                    if self.metadata.contains_key(&k) {
-                        if let Some(arr) = self.metadata.get_mut(&k) {
-                            arr.push(v);
-                        }
-                    } else {
-                        self.metadata.insert(k, vec![v]);
-                    }
+                    self.metadata.entry(k)
+                        .or_insert_with(Vec::default)
+                        .push(v);
                 } else if let Ok(k) = item.get_attr("property") {
                     let v = match item.text {
                         Some(ref x) => x.to_string(),
