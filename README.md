@@ -11,7 +11,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-epub = { git="https://github.com/cthwaite/epub-rs", version= "^1.2" }
+epub = { git = "https://github.com/cthwaite/epub-rs", branch = "master" }
 ```
 
 The minimum supported Rust version is 1.40.0.
