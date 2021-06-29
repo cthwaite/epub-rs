@@ -3,9 +3,11 @@
 //! Provides easy methods to navigate througth the epub content, cover,
 //! chapters, etc.
 
+use xmlutils::XMLError;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
+use std::io::BufReader;
 use std::io::{Read, Seek};
 use std::path::{Component, Path, PathBuf};
 
@@ -20,6 +22,8 @@ pub struct NavPoint {
     pub label: String,
     /// the resource path
     pub content: PathBuf,
+    /// nested navpoints
+    pub children: Vec<NavPoint>,
     /// the order in the toc
     pub play_order: usize,
 }
@@ -85,7 +89,7 @@ pub struct EpubDoc<R: Read + Seek> {
     pub unique_identifier: Option<String>,
 }
 
-impl EpubDoc<File> {
+impl EpubDoc<BufReader<File>> {
     /// Opens the epub file in `path`.
     ///
     /// Initialize some internal variables to be able to access to the epub
@@ -104,30 +108,11 @@ impl EpubDoc<File> {
     ///
     /// Returns an error if the epub is broken or if the file doesn't
     /// exists.
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<EpubDoc<File>, Error> {
-        let mut archive = EpubArchive::new(path)?;
-        let spine: Vec<String> = vec![];
-        let resources = HashMap::new();
-
-        let container = archive.get_container_file()?;
-        let root_file = get_root_file(container)?;
-        let base_path = root_file.parent().expect("All files have a parent");
-
-        let mut doc = EpubDoc {
-            archive,
-            spine,
-            toc: vec![],
-            resources,
-            metadata: HashMap::new(),
-            root_file: root_file.clone(),
-            root_base: base_path.to_path_buf(),
-            current: 0,
-            extra_css: vec![],
-            unique_identifier: None,
-        };
-
-        doc.fill_resources()?;
-
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<EpubDoc<BufReader<File>>, Error> {
+        let path = path.as_ref();
+        let file = File::open(path)?;
+        let mut doc = EpubDoc::from_reader(BufReader::new(file))?;
+        doc.archive.path = path.to_path_buf();
         Ok(doc)
     }
 }
@@ -166,7 +151,6 @@ impl<R: Read + Seek> EpubDoc<R> {
         let container = archive.get_container_file()?;
         let root_file = get_root_file(container)?;
         let base_path = root_file.parent().expect("All files have a parent");
-
         let mut doc = EpubDoc {
             archive,
             spine,
@@ -179,9 +163,7 @@ impl<R: Read + Seek> EpubDoc<R> {
             extra_css: vec![],
             unique_identifier: None,
         };
-
         doc.fill_resources()?;
-
         Ok(doc)
     }
 
@@ -627,37 +609,39 @@ impl<R: Read + Seek> EpubDoc<R> {
         self.spine.iter().position(|item| item == uri)
     }
 
+    // Forcibly converts separators in a filepath to unix separators to
+    // to ensure that ZipArchive's by_name method will retrieve the proper
+    // file. Failing to convert to unix-style on Windows causes the
+    // ZipArchive not to find the file.
+    fn convert_path_separators(&self, href: &str) -> PathBuf {
+        let path = self.root_base.join(href.split("/").collect::<PathBuf>());
+        if cfg!(windows) {
+            let path = path.as_path().display().to_string().replace("\\", "/");
+            return PathBuf::from(path);
+        }
+        PathBuf::from(path)
+    }
+
     fn fill_resources(&mut self) -> Result<(), Error> {
         let container = self.archive.get_entry(&self.root_file)?;
-        let xml = xmlutils::XMLReader::new(container.as_slice());
-        let root = xml.parse_xml()?;
-
+        let root = xmlutils::XMLReader::parse(container.as_slice())?;
         let unique_identifier_id = &root.borrow().get_attr("unique-identifier").ok();
-
         // resources from manifest
         let manifest = root.borrow().find("manifest")?;
         for r in manifest.borrow().childs.iter() {
             let item = r.borrow();
-            let id = item.get_attr("id")?;
-            let href = item.get_attr("href")?;
-            let mtype = item.get_attr("media-type")?;
-            self.resources
-                .insert(id, (self.root_base.join(&href), mtype));
+            let _ = self.insert_resource(&item);
         }
-
         // items from spine
         let spine = root.borrow().find("spine")?;
         for r in spine.borrow().childs.iter() {
             let item = r.borrow();
-            let id = item.get_attr("idref")?;
-            self.spine.push(id);
+            let _ = self.insert_spine(&item);
         }
-
         // toc.ncx
         if let Ok(toc) = spine.borrow().get_attr("toc") {
             let _ = self.fill_toc(&toc);
         }
-
         // metadata
         let metadata = root.borrow().find("metadata")?;
         for r in metadata.borrow().childs.iter() {
@@ -672,13 +656,7 @@ impl<R: Read + Seek> EpubDoc<R> {
                         Some(ref x) => x.to_string(),
                         None => String::from(""),
                     };
-                    if self.metadata.contains_key(&k) {
-                        if let Some(arr) = self.metadata.get_mut(&k) {
-                            arr.push(v);
-                        }
-                    } else {
-                        self.metadata.insert(k, vec![v]);
-                    }
+                    self.metadata.entry(k).or_insert(vec![]).push(v);
                 }
             } else {
                 let k = &item.name.local_name;
@@ -705,7 +683,22 @@ impl<R: Read + Seek> EpubDoc<R> {
                 }
             }
         }
+        Ok(())
+    }
 
+    fn insert_resource(&mut self, item: &xmlutils::XMLNode) -> Result<(), XMLError> {
+        let id = item.get_attr("id")?;
+        let href = item.get_attr("href")?;
+        let mtype = item.get_attr("media-type")?;
+        let path = self.convert_path_separators(&href);
+        self.resources
+            .insert(id, (path, mtype));
+        Ok(())
+    }
+
+    fn insert_spine(&mut self, item:&xmlutils::XMLNode) -> Result<(), XMLError> {
+        let id = item.get_attr("idref")?;
+        self.spine.push(id);
         Ok(())
     }
 
@@ -713,15 +706,24 @@ impl<R: Read + Seek> EpubDoc<R> {
         let toc_res = self.resources.get(id).ok_or(Error::TOCNotFound)?;
 
         let container = self.archive.get_entry(&toc_res.0)?;
-        let xml = xmlutils::XMLReader::new(container.as_slice());
-        let root = xml.parse_xml()?;
+        let root = xmlutils::XMLReader::parse(container.as_slice())?;
 
         let mapnode = root.borrow().find("navMap")?;
+
+        self.toc.append(&mut self.get_navpoints(&mapnode.borrow()));
+        self.toc.sort();
+
+        Ok(())
+    }
+
+    /// Recursively extract all navpoints from a node.
+    fn get_navpoints(&self, parent: &xmlutils::XMLNode) -> Vec<NavPoint> {
+        let mut navpoints = Vec::new();
 
         // TODO: get docTitle
         // TODO: parse metadata (dtb:totalPageCount, dtb:depth, dtb:maxPageNumber)
 
-        for nav in mapnode.borrow().childs.iter() {
+        for nav in parent.childs.iter() {
             let item = nav.borrow();
             if item.name.local_name != "navPoint" {
                 continue;
@@ -742,8 +744,7 @@ impl<R: Read + Seek> EpubDoc<R> {
                 Ok(l) => l
                     .borrow()
                     .childs
-                    .iter()
-                    .next()
+                    .get(0)
                     .and_then(|t| t.borrow().text.clone()),
                 _ => None,
             };
@@ -752,21 +753,20 @@ impl<R: Read + Seek> EpubDoc<R> {
                 let navpoint = NavPoint {
                     label: l.clone(),
                     content: c.clone(),
+                    children: self.get_navpoints(&item),
                     play_order: o,
                 };
-                self.toc.push(navpoint);
+                navpoints.push(navpoint);
             }
         }
 
-        self.toc.sort();
-
-        Ok(())
+        navpoints.sort();
+        navpoints
     }
 }
 
 fn get_root_file(container: Vec<u8>) -> Result<PathBuf, Error> {
-    let xml = xmlutils::XMLReader::new(container.as_slice());
-    let root = xml.parse_xml()?;
+    let root = xmlutils::XMLReader::parse(container.as_slice())?;
     let el = root.borrow();
     let element = el.find("rootfile")?;
     let el2 = element.borrow();
@@ -799,5 +799,12 @@ fn build_epub_uri<P: AsRef<Path>>(path: P, append: &str) -> String {
         };
     }
 
-    format!("epub://{}", cpath.display())
+    // If on Windows, replace all Windows path separators with Unix path separators
+    let path = if cfg!(windows) {
+        cpath.display().to_string().replace("\\", "/")
+    } else {
+        cpath.display().to_string()
+    };
+
+    format!("epub://{}", path)
 }

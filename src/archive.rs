@@ -4,6 +4,7 @@
 //! the content as string.
 
 use std::fs::File;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use crate::error::Error;
@@ -17,30 +18,19 @@ pub struct EpubArchive<R: Read + Seek> {
     pub files: Vec<String>,
 }
 
-impl EpubArchive<File> {
+impl EpubArchive<BufReader<File>> {
     /// Opens the epub file in `path`.
     ///
     /// # Errors
     ///
     /// Returns an error if the zip is broken or if the file doesn't
     /// exists.
-    pub fn new<P: AsRef<Path>>(path: P) -> Result<EpubArchive<File>, Error> {
+    pub fn new<P: AsRef<Path>>(path: P) -> Result<EpubArchive<BufReader<File>>, Error> {
         let path = path.as_ref();
         let file = File::open(path)?;
-
-        let mut zip = zip::ZipArchive::new(file)?;
-        let mut files = vec![];
-
-        for i in 0..(zip.len()) {
-            let file = zip.by_index(i)?;
-            files.push(String::from(file.name()));
-        }
-
-        Ok(EpubArchive {
-            zip,
-            path: path.to_path_buf(),
-            files,
-        })
+        let mut archive = EpubArchive::from_reader(BufReader::new(file))?;
+        archive.path = path.to_path_buf();
+        Ok(archive)
     }
 }
 
@@ -51,13 +41,9 @@ impl<R: Read + Seek> EpubArchive<R> {
     ///
     /// Returns an error if the zip is broken.
     pub fn from_reader(reader: R) -> Result<EpubArchive<R>, Error> {
-        let mut zip = zip::ZipArchive::new(reader)?;
-        let mut files = vec![];
+        let zip = zip::ZipArchive::new(reader)?;
 
-        for i in 0..(zip.len()) {
-            let file = zip.by_index(i)?;
-            files.push(String::from(file.name()));
-        }
+        let files:Vec<String> = zip.file_names().map(|f| f.to_string()).collect();
 
         Ok(EpubArchive {
             zip,
